@@ -1,0 +1,29 @@
+ESCC Metabolomic Evidence Atlas — rights and attribution
+
+This notice describes the distribution's material boundaries. It is not a project-wide open-source or open-data license, and it does not grant rights that the maintainers or contributing authors do not hold.
+
+PROJECT-AUTHORED CODE, CURATED REVIEW DATA AND TEXT
+
+No additional project-wide reuse license is granted for these project-authored materials. Public access to a repository or website must not be represented as a blanket right to redistribute third-party content. Third-party materials retain their respective rights and license terms.
+
+THIRD-PARTY SCIENTIFIC MATERIALS
+
+The reader data and supplementary tables contain bibliographic citations, reported findings and source locators. Rights in original publications, figures, images and other third-party materials remain with their respective rights holders. Referencing, summarizing or linking an original report does not assign its copyright to this resource. Any reuse of third-party material remains subject to its own applicable rights and license conditions.
+
+The public distribution excludes original article PDFs, patient- or participant-level datasets, private correspondence, credentials, internal extraction/audit payloads and private identifier crosswalks. It does not reproduce the manuscript's research figures as decorative website assets. Inclusion of reader-facing supplementary tables does not include their internal source-review or production files.
+
+LUCIDE INTERFACE ICONS
+
+The interface uses original SVG icons from the official Lucide repository:
+https://github.com/lucide-icons/lucide
+
+The complete upstream license is retained at site/assets/icons/LICENSE in a repository containing the site/ folder, and at assets/icons/LICENSE within an extracted offline site. That file contains the Lucide ISC notice and the MIT notice for the Feather-derived icons identified by upstream. These permissions apply to the respective icon assets only. They do not license the atlas's curated data, code, supplementary tables or third-party scientific content. Preserve the full upstream copyright and permission notices when distributing those assets.
+
+SYMBOLIC DECORATION AND SAMPLE-CATEGORY AIDS
+
+The molecular-network background and other generated interface decoration are symbolic artwork for visual orientation. They do not encode measured concentrations, molecular structures, causal relations, sample counts, study participants, patient outcomes or research results. Sample icons are neutral category aids; serum and plasma remain different sample matrices even when they share a tube icon. Layered shapes used for exosomes do not depict an observed vesicle structure. Such artwork must not be cited as scientific evidence or confused with an original published study image.
+
+DATA INTERPRETATION AND ATTRIBUTION
+
+Keep original report citations and scientific qualifications when describing a record. Observation, support, performance, model and group counts are different units. Retain negative, conflicting, NR, UNC and NE information and the associated field-specific explanations. Do not imply endorsement by original authors or by third-party asset contributors.
+

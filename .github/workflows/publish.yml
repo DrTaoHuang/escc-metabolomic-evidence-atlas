@@ -1,0 +1,201 @@
+name: Publish ESCC Evidence Atlas
+
+'on':
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-escc-evidence-atlas-main
+  cancel-in-progress: false
+
+env:
+  OFFLINE_ZIP: ESCC_Evidence_Atlas_v1.0.0_Offline.zip
+  RELEASE_TAG: v1.0.0
+
+jobs:
+  build:
+    if: github.repository == 'DrTaoHuang/escc-metabolomic-evidence-atlas' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      zip_sha256: ${{ steps.package.outputs.zip_sha256 }}
+    steps:
+      - name: Check out the publication commit
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Prepare and validate the static site
+        id: package
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import zipfile
+
+          archive = Path(os.environ["OFFLINE_ZIP"])
+          if not archive.is_file():
+              raise SystemExit(f"Required offline archive is missing: {archive}")
+          destination = Path("_site")
+          destination.mkdir()
+          with zipfile.ZipFile(archive) as source:
+              corrupt = source.testzip()
+              if corrupt is not None:
+                  raise SystemExit(f"Archive CRC check failed: {corrupt}")
+              for entry in source.infolist():
+                  name = PurePosixPath(entry.filename)
+                  if (
+                      not name.parts
+                      or name.is_absolute()
+                      or ".." in name.parts
+                      or "\\" in entry.filename
+                      or name.parts[0] != "ESCC_Evidence_Atlas"
+                  ):
+                      raise SystemExit(f"Unexpected archive path: {entry.filename}")
+                  relative = name.parts[1:]
+                  if not relative:
+                      continue
+                  target = destination.joinpath(*relative)
+                  if entry.is_dir():
+                      target.mkdir(parents=True, exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(source.read(entry))
+
+          required = ["index.html", "data.js", "evidence.json"]
+          required += [f"downloads/S{i}.docx" for i in range(1, 21)]
+          required += ["downloads/Supplementary_Tables.docx"]
+          for relative in required:
+              file = destination / relative
+              if not file.is_file() or file.stat().st_size == 0:
+                  raise SystemExit(f"Required site file is missing or empty: {relative}")
+          if len(list((destination / "downloads").glob("*.docx"))) != 21:
+              raise SystemExit("Expected exactly 21 Word downloads")
+          with (destination / "evidence.json").open(encoding="utf-8") as handle:
+              json.load(handle)
+
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"zip_sha256={digest}\n")
+          print("Validated site entry point, data files and all 21 Word downloads")
+          PY
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the Pages site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the publication commit
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Publish the fixed offline release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERIFIED_ZIP_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+
+          archive = Path(os.environ["OFFLINE_ZIP"])
+          tag = os.environ["RELEASE_TAG"]
+          repository = os.environ["GH_REPO"]
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if digest != os.environ["VERIFIED_ZIP_SHA256"]:
+              raise SystemExit("Release ZIP differs from the validated build ZIP")
+          directory = Path(tempfile.mkdtemp(prefix="escc-release-", dir=os.environ["RUNNER_TEMP"]))
+          checksum = directory / (archive.name + ".sha256")
+          checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii", newline="\n")
+          expected = {archive.name: archive, checksum.name: checksum}
+
+          def gh(*arguments):
+              return subprocess.run(["gh", *arguments], check=True, text=True, capture_output=True)
+
+          lookup = subprocess.run(
+              ["gh", "api", f"repos/{repository}/releases/tags/{tag}"],
+              text=True,
+              capture_output=True,
+          )
+          if lookup.returncode != 0:
+              if not re.search(r"\bHTTP\s+404\b", lookup.stderr):
+                  raise SystemExit(f"Cannot inspect existing release: {lookup.stderr.strip()}")
+              gh(
+                  "release", "create", tag, str(archive), str(checksum),
+                  "--repo", repository,
+                  "--target", os.environ["GITHUB_SHA"],
+                  "--title", "ESCC Metabolomic Evidence Atlas v1.0.0",
+                  "--notes", "Offline evidence atlas with English and Simplified Chinese interfaces. Download the ZIP and its SHA-256 checksum; extract the complete ZIP before opening index.html.",
+              )
+              print(f"Published {tag} with the offline ZIP and SHA-256 checksum")
+          else:
+              release = json.loads(lookup.stdout)
+              if release.get("draft") or release.get("prerelease"):
+                  raise SystemExit("Existing version is a draft or prerelease; leaving it unchanged")
+              assets = release.get("assets", [])
+              missing = []
+              for name, local in expected.items():
+                  matches = [asset for asset in assets if asset["name"] == name]
+                  if len(matches) > 1:
+                      raise SystemExit(f"Duplicate existing release assets: {name}")
+                  if not matches:
+                      missing.append(local)
+                      continue
+                  remote = directory / ("existing-" + name)
+                  gh(
+                      "release", "download", tag,
+                      "--repo", repository,
+                      "--pattern", name,
+                      "--output", str(remote),
+                  )
+                  remote_digest = hashlib.sha256(remote.read_bytes()).hexdigest()
+                  local_digest = hashlib.sha256(local.read_bytes()).hexdigest()
+                  if remote_digest != local_digest:
+                      raise SystemExit(f"Existing asset differs; refusing to overwrite: {name}")
+              # All existing expected assets must match before any missing asset is uploaded.
+              for local in missing:
+                  gh("release", "upload", tag, str(local), "--repo", repository)
+                  print(f"Uploaded missing asset: {local.name}")
+              if not missing:
+                  print(f"Release {tag} already contains byte-identical ZIP and checksum assets")
+          PY
