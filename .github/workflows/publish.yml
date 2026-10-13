@@ -242,9 +242,12 @@ jobs:
           import re
           import subprocess
           import tempfile
+          from urllib.parse import quote
 
           repository = os.environ['GH_REPO']
           tag = os.environ['RELEASE_TAG']
+          release_title = f'ESCC Metabolomic Evidence Atlas {tag}'
+          release_notes = 'Integrated evidence view, complete bilingual offline atlas and reproducible graph-source archive. Both archives belong to the same fixed version and publication commit; their SHA-256 checksums are supplied.'
           publication_sha = os.environ['GITHUB_SHA']
           if publication_sha != os.environ['VERIFIED_PUBLICATION_SHA']:
               raise SystemExit('Build and release refer to different publication commits')
@@ -340,6 +343,22 @@ jobs:
                           '-H', 'X-GitHub-Api-Version: 2026-03-10', allow_missing=allow_missing)
               return None if result is None else json.loads(result.stdout)
 
+          def write_release(endpoint, draft_state, title, body, method='PATCH'):
+              result = gh('api', endpoint, '--method', method,
+                          '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2026-03-10',
+                          '-f', f'tag_name={tag}', '-f', f'target_commitish={publication_sha}',
+                          '-f', f'name={title}', '-f', f'body={body}',
+                          '-F', f'draft={str(draft_state).lower()}', '-F', 'prerelease=false')
+              return json.loads(result.stdout)
+
+          def own_known_empty_draft(value, tag_sha):
+              return (value is not None and tag_sha is None and value.get('id') == 411198881
+                      and value.get('tag_name') in (tag, 'untagged-dfbd511c16a0bcc1c8a6')
+                      and value.get('name') == release_title and value.get('body') == release_notes
+                      and value.get('draft') is True and not value.get('prerelease')
+                      and value.get('published_at') is None and value.get('assets') == []
+                      and value.get('target_commitish') == 'e168298629960fb375818de02fd9a9e2682318e8')
+
           def find_release(allow_missing=False):
               # The tag endpoint returns published releases, not drafts.
               published = api(f'repos/{repository}/releases/tags/{tag}', allow_missing=True)
@@ -358,6 +377,11 @@ jobs:
               if len(matches) > 1:
                   raise SystemExit('More than one release matches the fixed version; leaving all unchanged')
               if not matches:
+                  known = api(f'repos/{repository}/releases/411198881', allow_missing=True)
+                  if known is not None:
+                      if not own_known_empty_draft(known, tag_commit(allow_missing=True)):
+                          raise SystemExit('Known release ID no longer matches the exact unpublished recovery state; leaving it unchanged')
+                      return known
                   if allow_missing:
                       return None
                   raise SystemExit('The fixed release was not found after creation')
@@ -380,23 +404,15 @@ jobs:
               raise SystemExit('Release tag annotation nesting is invalid')
 
           def recover_known_empty_draft(release, existing_tag_sha):
-              if not release.get('draft') or existing_tag_sha is not None or release.get('target_commitish') == publication_sha:
+              if not release.get('draft') or existing_tag_sha is not None or (release.get('target_commitish') == publication_sha and release.get('tag_name') == tag):
                   return release
-              def eligible(value, tag_sha):
-                  return (tag_sha is None and value.get('id') == 411198881
-                          and value.get('tag_name') == tag and value.get('draft') is True
-                          and not value.get('prerelease') and value.get('published_at') is None
-                          and value.get('assets') == []
-                          and value.get('target_commitish') == '91b7e3c27062f392872abbcf7f4751e4a87531f7')
-              if not eligible(release, existing_tag_sha):
+              if not own_known_empty_draft(release, existing_tag_sha):
                   raise SystemExit('Existing unpublished release has another target; leaving it unchanged')
               endpoint = f'repos/{repository}/releases/{release["id"]}'
               fresh = api(endpoint)
-              if not eligible(fresh, tag_commit(allow_missing=True)):
+              if not own_known_empty_draft(fresh, tag_commit(allow_missing=True)):
                   raise SystemExit('Known draft no longer qualifies for empty-draft recovery; leaving it unchanged')
-              gh('api', endpoint, '--method', 'PATCH',
-                 '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2026-03-10',
-                 '-f', f'target_commitish={publication_sha}')
+              write_release(endpoint, True, fresh['name'], fresh['body'])
               updated = api(endpoint)
               if (updated.get('id') != 411198881 or updated.get('tag_name') != tag
                       or updated.get('draft') is not True or updated.get('assets') != []
@@ -406,18 +422,40 @@ jobs:
                   raise SystemExit('Recovered draft does not retain the required unpublished state and publication target')
               return updated
 
+          def download_asset(asset, destination):
+              command = ['gh', 'api', f'repos/{repository}/releases/assets/{asset["id"]}',
+                         '-H', 'Accept: application/octet-stream', '-H', 'X-GitHub-Api-Version: 2026-03-10']
+              with destination.open('wb') as output:
+                  result = subprocess.run(command, stdout=output, stderr=subprocess.PIPE)
+              if result.returncode:
+                  raise SystemExit(f'Release asset download failed: {result.stderr.decode("utf-8", errors="replace").strip()}')
+
+          def upload_asset(release, local):
+              base = release['upload_url'].split('{', 1)[0]
+              expected_base = f'https://uploads.github.com/repos/{repository}/releases/{release["id"]}/assets'
+              if base != expected_base:
+                  raise SystemExit('Release upload URL does not match its exact repository and ID')
+              result = gh('api', base + '?name=' + quote(local.name, safe=''), '--method', 'POST',
+                          '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2026-03-10',
+                          '-H', 'Content-Type: application/octet-stream', '--input', str(local))
+              asset = json.loads(result.stdout)
+              if asset.get('name') != local.name or asset.get('state') != 'uploaded' or asset.get('size') != local.stat().st_size:
+                  raise SystemExit('Uploaded release asset metadata differs from the validated file')
+              return asset
+
           existing_tag_sha = tag_commit(allow_missing=True)
           if existing_tag_sha is not None and existing_tag_sha != publication_sha:
               raise SystemExit('Fixed tag points to another commit; refusing to move or overwrite it')
           release = find_release(allow_missing=True)
           if release is None:
-              gh('release', 'create', tag, '--repo', repository, '--target', publication_sha,
-                 '--title', f'ESCC Metabolomic Evidence Atlas {tag}', '--draft',
-                 '--notes', 'Integrated evidence view, complete bilingual offline atlas and reproducible graph-source archive. Both archives belong to the same fixed version and publication commit; their SHA-256 checksums are supplied.')
-              release = find_release()
+              created = write_release(f'repos/{repository}/releases', True, release_title, release_notes, method='POST')
+              release = api(f'repos/{repository}/releases/{created["id"]}')
           if release.get('prerelease'):
               raise SystemExit('Existing version is a prerelease; leaving it unchanged')
           release = recover_known_empty_draft(release, existing_tag_sha)
+          if release.get('draft') and (release.get('tag_name') != tag or release.get('target_commitish') != publication_sha
+                                       or release.get('name') != release_title or release.get('body') != release_notes):
+              raise SystemExit('Draft metadata does not match this fixed publication; leaving it unchanged')
           assets = release.get('assets', [])
           if release.get('draft') and any(asset['name'] not in expected for asset in assets):
               raise SystemExit('Existing unpublished release has unreviewed extra assets; leaving it unchanged')
@@ -430,26 +468,33 @@ jobs:
                   missing.append(local)
                   continue
               remote = directory / ('existing-' + name)
-              gh('release', 'download', tag, '--repo', repository, '--pattern', name, '--output', str(remote))
+              download_asset(matches[0], remote)
               if hashlib.sha256(remote.read_bytes()).hexdigest() != hashlib.sha256(local.read_bytes()).hexdigest():
                   raise SystemExit(f'Existing asset differs; refusing to overwrite: {name}')
           if missing and release.get('immutable'):
               raise SystemExit('Existing fixed release is immutable and incomplete; leaving it unchanged')
           for local in missing:
-              gh('release', 'upload', tag, str(local), '--repo', repository)
+              asset = upload_asset(release, local)
+              remote = directory / ('uploaded-' + local.name)
+              download_asset(asset, remote)
+              if hashlib.sha256(remote.read_bytes()).hexdigest() != hashlib.sha256(local.read_bytes()).hexdigest():
+                  raise SystemExit('Uploaded draft asset differs from the validated bytes; leaving the draft unpublished')
           if release.get('draft'):
-              gh('release', 'edit', tag, '--repo', repository, '--draft=false')
+              fresh = api(f'repos/{repository}/releases/{release["id"]}')
+              if fresh.get('tag_name') != tag or fresh.get('target_commitish') != publication_sha or fresh.get('draft') is not True:
+                  raise SystemExit('Draft tag or target changed before publication; leaving it unpublished')
+              write_release(f'repos/{repository}/releases/{release["id"]}', False, fresh['name'], fresh['body'])
           if tag_commit() != publication_sha:
               raise SystemExit('Published fixed tag differs from the validated publication commit')
-          final = api(f'repos/{repository}/releases/tags/{tag}')
-          if final.get('draft') or final.get('prerelease'):
+          final = api(f'repos/{repository}/releases/{release["id"]}')
+          if final.get('tag_name') != tag or final.get('draft') or final.get('prerelease'):
               raise SystemExit('The fixed release was not published successfully')
           for name, local in expected.items():
               matches = [asset for asset in final.get('assets', []) if asset['name'] == name]
               if len(matches) != 1 or matches[0].get('state') != 'uploaded':
                   raise SystemExit(f'Published expected asset is missing or incomplete: {name}')
               remote = directory / ('final-' + name)
-              gh('release', 'download', tag, '--repo', repository, '--pattern', name, '--output', str(remote))
+              download_asset(matches[0], remote)
               if hashlib.sha256(remote.read_bytes()).hexdigest() != hashlib.sha256(local.read_bytes()).hexdigest():
                   raise SystemExit(f'Published asset differs from the validated bytes: {name}')
           print(f'{tag} has both archives and their matching checksums on the publication commit')
