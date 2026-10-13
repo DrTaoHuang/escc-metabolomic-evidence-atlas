@@ -1,0 +1,47 @@
+{
+  "archive": "ESCC_Evidence_Atlas_v1.1.0_Offline.zip",
+  "sha256": "bd2e2b6ad22d3ff229778218ad19e928e86baf887467d69e2ca3b50336d44c1d",
+  "bytes": 15824912,
+  "parts": [
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part001",
+      "sha256": "7833c1e3e031aa94fb47848a29d0e4229bc3e5aaf27692670206956e5b7686ea",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part002",
+      "sha256": "34a5956f42a6da4fbdd13e54b7ec2994f9848a0cbd826e50981ed0dd22bb7214",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part003",
+      "sha256": "0a095603c66cd98cd06735c804521bc8954e46bafb40df1e3bb1caae1a0bd98a",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part004",
+      "sha256": "6fa7f04411e0466b8fdf65c3813d36056221b7606559145f13b0031d4b508762",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part005",
+      "sha256": "520c13dd278fba9ad674b3251ad96c7f71e0304ddc33ec77e70d7684e2183105",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part006",
+      "sha256": "fb20c14cfe458e76a7fa4e0207b9df5ae33a6fa62aeb892f92f50319c7493709",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part007",
+      "sha256": "82c8e43955deedec44423c8cda4d22e72e402e533480c0085b7518d9b1d39961",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Evidence_Atlas_v1.1.0_Offline.zip.part008",
+      "sha256": "c3fc569a869f2287ab0df3118591f10a2a81fad504ae402d7323c3bceac588e7",
+      "bytes": 1144848
+    }
+  ]
+}

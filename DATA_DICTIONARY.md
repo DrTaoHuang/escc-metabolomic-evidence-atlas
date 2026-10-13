@@ -93,3 +93,38 @@ Glossary entries contain `id`, `term`, `description`, `category`, `details` and 
 | Absent topic summary key | No generic summary projection was provided; consult the full `details` |
 
 Explicit no-difference findings, mixed/conflicting directions, reported precision and identity limitations are part of the evidence and must not be removed during export or translation. Numerical values with units, logarithmic scales, exponents, minus signs or inequality symbols must be retained exactly. The glossary's field-specific meaning takes precedence over an automatic global replacement of a short token.
+
+
+## Integrated graph layer
+
+The integrated view adds a separate relationship layer; it does not replace or renumber the reader evidence arrays above. Its files are:
+
+- `atlas-data/graph.json`: the graph object.
+- `atlas-data/graph-data.js`: the browser form used for offline access.
+- `atlas-data/theme-guide.json` and `atlas-data/theme-guide.js`: theme-level orientation for the represented evidence; this guide does not create additional scientific relationships.
+- `atlas-data/nodes.csv` and `atlas-data/edges.csv`: tabular forms of the node and relationship records.
+- `atlas-source/reviewed_relations.json`: public, source-qualified relation input.
+- `atlas-source/RULES.md` and `atlas-source/DATA_DICTIONARY.md`: the precise relation admission and graph-field contract.
+- `atlas-source/build_graph.py` and `atlas-source/README.md`: reconstruction from the public evidence and relation input.
+- `atlas.js`, `atlas.css` and the accompanying PNG outputs: interface/rendering source and graph representations.
+
+The graph object has the following top-level fields:
+
+| Field | Meaning |
+| --- | --- |
+| `schemaVersion` | Graph schema identifier; distinct from the software release version |
+| `nodes` | Typed graph entities, with identifiers of the form `kind:publicId` |
+| `edges` | Typed relationships between the declared entities |
+| `counts` | Counts for the graph layer only; not additional reports, participants, compounds or independent validations |
+| `coverage` | The represented scope and its counting units |
+| `rules` | Relationship definitions and scientific interpretation restrictions |
+
+Each relationship is interpreted through its declared type, endpoint context and `sourceRefs`. A source reference has `tableId`, `recordId` and `locator`. It points to the supporting reader table/record and source position, not a private extraction path. A `topicRow` can inherit the reviewed parent topic context; this is not an unrestricted join to every molecule, model or source in the parent report.
+
+Use the enclosed graph field dictionary for the actual entity and relationship enumerations. Topic membership, input membership, source provenance, human association and experimental support must not be treated as interchangeable links. Source uncertainty, molecular resolution, sample matrix, comparison and timepoint remain attached to the interpretation. A model's validation evidence does not independently validate each input feature or a pathway.
+
+Coverage and current filters define what appears in the graph. Absence from the graph or absence of a line is not evidence of biological absence, a null result, failure of validation or lack of literature. Counts in `counts` and `coverage` use their stated graph units and cannot be substituted for the full-resource denominators. Repeated representation of one model or source does not add independent evidence.
+
+The accepted observation, support, performance, result-group and model registries remain in the graph. Scientific-theme membership is representative rather than exhaustive: 17 themes have 102 observation, 92 support and 32 performance links selected with source-specific context. The 307 original-feature bindings belong only to R008. Forty-one programme links involve 33 specific S19 programmes; eight general gates remain unassigned to a particular theme or use. Model/performance clinical-use values retain the accepted S9 classification, including an empty value for exploratory or unassigned use. An explicit clinical-table observation link can supply a clinical reading context without reclassifying a connected model or transferring validation.
+
+No composite quality score, pathway score, maturity total or cross-study AUC ranking is encoded. Parallel evidence dimensions and declared relationships support source-aware comparison; they do not establish causal mechanisms, test-guided patient benefit or clinical deployment.

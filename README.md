@@ -24,7 +24,8 @@ The observation, support and performance subsets are contributed by 109, 111 and
 
 - **Online atlas:** `https://drtaohuang.github.io/escc-metabolomic-evidence-atlas/`
 - **Source repository:** `https://github.com/DrTaoHuang/escc-metabolomic-evidence-atlas`
-- **Fixed release and offline downloads:** `https://github.com/DrTaoHuang/escc-metabolomic-evidence-atlas/releases/tag/v1.0.0`
+- **Fixed release and offline downloads:** `https://github.com/DrTaoHuang/escc-metabolomic-evidence-atlas/releases/tag/v1.1.0`
+- **Earlier fixed edition:** [v1.0.0](https://github.com/DrTaoHuang/escc-metabolomic-evidence-atlas/releases/tag/v1.0.0)
 
 The atlas opens in English, with a Simplified Chinese switch. Both language views use the same evidence records. Interface translation does not change scientific values, participant relationships, original feature names, citations or source uncertainty. Source wording can remain in its original language where faithful quotation or identification requires it.
 
@@ -44,6 +45,18 @@ The atlas opens in English, with a Simplified Chinese switch. Both language view
 4. Use the language switch, search, record details, topics, local exports and bundled supplementary tables without an internet connection.
 
 Article DOI links and release-download links require internet access. The offline archive need not contain another copy of its own ZIP. The online and offline editions should identify the same fixed release and expose the same scientific records.
+
+## Integrated evidence view
+
+The integrated view provides a theme-first entry to linked molecular observations, reported features, model or marker records, clinical-use contexts and source evidence. Expand a theme or selected entity to read its context and follow the original record. The complete record lists remain available through evidence search.
+
+Read a line by its declared relationship type, as defined in [the graph rules](https://drtaohuang.github.io/escc-metabolomic-evidence-atlas/atlas-source/RULES.md). Review-topic membership organizes a narrative context; model-input membership identifies a feature included in a particular reported test. A human association, experimental support and a source/provenance link have different meanings. A line is not automatically a causal relation, a molecular-identity confirmation or an independent validation. The relationship types available in a particular view follow the supplied relation table.
+
+The graph retains the accepted observation, support, performance, result-group and model registries and their recorded source links. The connections from the 17 scientific themes to particular records are selected representative examples, not an exhaustive supporting-record census: they include 102 observation links, 92 biological-support links and 32 performance links. Original-feature bindings cover 307 source features from R008 only. The 41 research-programme links involve 33 specific S19 programmes; the eight general research gates remain available without a forced theme or clinical-use assignment. These relation counts are not counts of independent studies or validated tests. An absent displayed line does not establish absent evidence or a negative finding; consult the complete record and source context.
+
+Serum and plasma, different comparators and sampling times, named compounds and unresolved features, and human versus nonhuman support retain their distinctions. Related reports do not add independent participants. A topic row's inherited parent context is identified as such and does not grant more specific molecular, model or source conclusions.
+
+Identity, independent human support, biological anchoring, assay/model implementation, target-population evaluation, incremental value and clinical utility are parallel evidence dimensions. They do not form a total score or a universal progression ladder. Model-level validation cannot be transferred to every input molecule or a related pathway. Node size, colour, line count and AUC are not rankings of evidence strength or clinical readiness. Null, opposite, conflicting and scientifically uncertain findings retain their source qualifications.
 
 ## Read the evidence in context
 
@@ -81,4 +94,12 @@ Use the fixed release version when describing the resource. Preserve original na
 
 ## Website source and release bundle
 
-The website HTML, CSS and JavaScript source and the original evidence payload are included in the complete offline release archive. GitHub Pages deploys the same reviewed archive. The public repository contains the deployment workflow and release documentation; the archive keeps the website, scientific records and supplementary documents together.
+The fixed v1.1.0 release provides:
+
+- `ESCC_Evidence_Atlas_v1.1.0_Offline.zip`: the complete website, original reader evidence, supplementary Word documents and integrated view.
+- `ESCC_Integrated_Atlas_v1.1.0_Source.zip`: the public evidence input, typed graph data and CSV files, reviewed relation input, relationship rules, field dictionary, reproduction script, graph interface code and generated PNG outputs.
+- `SHA256SUMS_v1.1.0.txt`: SHA-256 checksums for both archives.
+
+Both archives are bound to the same fixed release and publication commit. The online site is deployed from the corresponding complete website archive. The earlier v1.0.0 edition remains available and does not acquire the new integrated view retroactively.
+
+For reconstruction, see [the reconstruction guide](https://drtaohuang.github.io/escc-metabolomic-evidence-atlas/atlas-source/README.md). Both complete archives also include these local documents at atlas-source/README.md and atlas-source/RULES.md, so their contents are available offline. The reproduction input is the public `evidence.json` plus the included reviewed relation input; it does not require private extraction files or local project paths. The graph data and its generated outputs retain their declared evidence boundaries.

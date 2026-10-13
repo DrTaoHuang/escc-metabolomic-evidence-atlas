@@ -1,0 +1,22 @@
+{
+  "archive": "ESCC_Integrated_Atlas_v1.1.0_Source.zip",
+  "sha256": "9bbe7fc883437ebbf8c040a3cd1086615062063f5542ad4e76cf9258c86fc702",
+  "bytes": 6032504,
+  "parts": [
+    {
+      "path": "releases/v1.1.0/ESCC_Integrated_Atlas_v1.1.0_Source.zip.part001",
+      "sha256": "6f174fa6ffd79d9db4ac6263ad1f10c0773edca2d7548e508e923f531cf8e894",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Integrated_Atlas_v1.1.0_Source.zip.part002",
+      "sha256": "1b0b96697e97227af56c64bdb4ed68d9b5a896d9e733ec2a998326f3e81a5b02",
+      "bytes": 2097152
+    },
+    {
+      "path": "releases/v1.1.0/ESCC_Integrated_Atlas_v1.1.0_Source.zip.part003",
+      "sha256": "319e685118e4ad1dd01c247c62c241907082d950c8fc74f428bb0f4639e7ed55",
+      "bytes": 1838200
+    }
+  ]
+}

@@ -13,8 +13,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OFFLINE_ZIP: ESCC_Evidence_Atlas_v1.0.0_Offline.zip
-  RELEASE_TAG: v1.0.0
+  OFFLINE_ZIP: ESCC_Evidence_Atlas_v1.1.0_Offline.zip
+  GRAPH_SOURCE_ZIP: ESCC_Integrated_Atlas_v1.1.0_Source.zip
+  CHECKSUM_FILE: SHA256SUMS_v1.1.0.txt
+  OFFLINE_PARTS_MANIFEST: ESCC_Evidence_Atlas_v1.1.0_Offline.parts.json
+  GRAPH_SOURCE_PARTS_MANIFEST: ESCC_Integrated_Atlas_v1.1.0_Source.parts.json
+  RELEASE_TAG: v1.1.0
 
 jobs:
   build:
@@ -25,13 +29,16 @@ jobs:
       pages: read
     outputs:
       zip_sha256: ${{ steps.package.outputs.zip_sha256 }}
+      graph_source_sha256: ${{ steps.package.outputs.graph_source_sha256 }}
+      publication_sha: ${{ steps.package.outputs.publication_sha }}
     steps:
-      - name: Check out the publication commit
+      - name: Check out the fixed publication commit
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Prepare and validate the static site
+      - name: Validate the complete site and graph source archives
         id: package
         shell: bash
         run: |
@@ -39,63 +46,362 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           from pathlib import Path, PurePosixPath
+          import stat
+          import subprocess
           import zipfile
 
-          archive = Path(os.environ["OFFLINE_ZIP"])
-          if not archive.is_file():
-              raise SystemExit(f"Required offline archive is missing: {archive}")
-          destination = Path("_site")
+          publication_sha = os.environ['GITHUB_SHA']
+          actual_sha = subprocess.run(['git', 'rev-parse', 'HEAD'], check=True, text=True, capture_output=True).stdout.strip()
+          if actual_sha != publication_sha:
+              raise SystemExit('Build checkout differs from the publication commit')
+          def require_committed(path):
+              subprocess.run(['git', 'ls-files', '--error-unmatch', str(path)], check=True, capture_output=True)
+              dirty = subprocess.run(['git', 'diff', '--name-only', 'HEAD', '--', str(path)], check=True, text=True, capture_output=True).stdout.strip()
+              if dirty:
+                  raise SystemExit(f'Publication input differs from its committed bytes: {path}')
+
+          def prepare_archive(archive, manifest_name):
+              manifest_file = Path(manifest_name)
+              manifest = None
+              if manifest_file.is_file():
+                  require_committed(manifest_file)
+                  manifest = json.loads(manifest_file.read_text(encoding='utf-8-sig'))
+                  if manifest.get('archive') != archive.name:
+                      raise SystemExit('Parts manifest names another archive')
+                  if not re.fullmatch(r'[0-9a-fA-F]{64}', str(manifest.get('sha256', ''))):
+                      raise SystemExit('Parts manifest has no valid whole-archive SHA-256')
+                  if type(manifest.get('bytes')) is not int or manifest['bytes'] <= 0:
+                      raise SystemExit('Parts manifest has no valid whole-archive byte count')
+              if archive.is_file():
+                  require_committed(archive)
+                  if manifest and (archive.stat().st_size != manifest['bytes'] or hashlib.sha256(archive.read_bytes()).hexdigest() != manifest['sha256'].lower()):
+                      raise SystemExit('Committed complete archive differs from its parts declaration')
+                  return
+              if manifest is None:
+                  raise SystemExit(f'Complete archive and parts manifest are both missing: {archive.name}')
+              parts = manifest.get('parts')
+              if not isinstance(parts, list) or not parts:
+                  raise SystemExit('Parts manifest must contain an ordered nonempty part list')
+              root = Path.cwd().resolve()
+              seen = set()
+              whole = hashlib.sha256()
+              total = 0
+              temporary = archive.with_name(archive.name + '.assembled.tmp')
+              with temporary.open('wb') as output:
+                  for item in parts:
+                      name = str(item.get('path', ''))
+                      relative = PurePosixPath(name)
+                      if not name or relative.is_absolute() or '..' in relative.parts or '\\' in name or name in seen:
+                          raise SystemExit('Invalid or repeated part path')
+                      seen.add(name)
+                      part = Path(*relative.parts)
+                      resolved = part.resolve()
+                      if part.is_symlink() or not resolved.is_relative_to(root) or not part.is_file():
+                          raise SystemExit(f'Part is missing or outside the checkout: {name}')
+                      if type(item.get('bytes')) is not int or item['bytes'] <= 0 or part.stat().st_size != item['bytes']:
+                          raise SystemExit(f'Part byte count differs: {name}')
+                      if not re.fullmatch(r'[0-9a-fA-F]{64}', str(item.get('sha256', ''))):
+                          raise SystemExit(f'Invalid part SHA-256: {name}')
+                      require_committed(part)
+                      digest = hashlib.sha256()
+                      with part.open('rb') as source:
+                          for chunk in iter(lambda: source.read(4 * 1024 * 1024), b''):
+                              digest.update(chunk)
+                              whole.update(chunk)
+                              total += len(chunk)
+                              output.write(chunk)
+                      if digest.hexdigest() != item['sha256'].lower():
+                          raise SystemExit(f'Part checksum differs: {name}')
+              if total != manifest['bytes'] or whole.hexdigest() != manifest['sha256'].lower():
+                  raise SystemExit('Joined archive differs from its declared byte count or SHA-256')
+              temporary.replace(archive)
+              print(f'Reconstructed and checked {archive.name} from committed parts')
+
+          prepare_archive(Path(os.environ['OFFLINE_ZIP']), os.environ['OFFLINE_PARTS_MANIFEST'])
+          prepare_archive(Path(os.environ['GRAPH_SOURCE_ZIP']), os.environ['GRAPH_SOURCE_PARTS_MANIFEST'])
+
+          packages = [(Path(os.environ['OFFLINE_ZIP']), 'ESCC_Evidence_Atlas'),
+                      (Path(os.environ['GRAPH_SOURCE_ZIP']), 'ESCC_Integrated_Atlas_Source')]
+          forbidden_parts = {'audit', 'work', 'manuscript', 'data_fulltext', 'extraction', '.git'}
+
+          def inspect_archive(archive, root):
+              if not archive.is_file():
+                  raise SystemExit(f'Required archive is missing: {archive.name}')
+              payload = {}
+              with zipfile.ZipFile(archive) as zipped:
+                  corrupt = zipped.testzip()
+                  if corrupt is not None:
+                      raise SystemExit(f'Archive CRC failure: {archive.name}: {corrupt}')
+                  for entry in zipped.infolist():
+                      name = PurePosixPath(entry.filename)
+                      if (not name.parts or name.is_absolute() or '..' in name.parts
+                              or '\\' in entry.filename or name.parts[0] != root
+                              or stat.S_ISLNK(entry.external_attr >> 16)):
+                          raise SystemExit(f'Unexpected archive path: {archive.name}: {entry.filename}')
+                      relative = name.parts[1:]
+                      if not relative or entry.is_dir():
+                          continue
+                      key = '/'.join(relative)
+                      if any(part.lower() in forbidden_parts for part in relative) or name.suffix.lower() in {'.pdf', '.jsonl'}:
+                          raise SystemExit(f'Private or excluded file in public archive: {key}')
+                      if key in payload:
+                          raise SystemExit(f'Duplicate archive entry: {key}')
+                      payload[key] = zipped.read(entry)
+              return payload
+
+          site = inspect_archive(*packages[0])
+          graph_source = inspect_archive(*packages[1])
+          required = ['index.html', 'app.js', 'styles.css', 'visual.css', 'i18n.js',
+                      'evidence-translations.js', 'ui-translations.js', 'data.js', 'content.js', 'evidence.json',
+                      'atlas.js', 'atlas.css', 'atlas-data/graph.json', 'atlas-data/graph-data.js', 'atlas-data/theme-guide.json', 'atlas-data/theme-guide.js',
+                      'atlas-data/nodes.csv', 'atlas-data/edges.csv', 'atlas-source/reviewed_relations.json',
+                      'atlas-source/RULES.md', 'atlas-source/DATA_DICTIONARY.md',
+                      'atlas-source/build_graph.py', 'atlas-source/README.md']
+          required += [f'downloads/S{i}.docx' for i in range(1, 21)] + ['downloads/Supplementary_Tables.docx']
+          for key in required:
+              if key not in site or not site[key]:
+                  raise SystemExit(f'Required site file missing or empty: {key}')
+          if len([key for key in site if key.startswith('downloads/') and key.endswith('.docx')]) != 21:
+              raise SystemExit('Expected exactly 21 Word downloads')
+          graph_required = ['evidence.json', 'atlas.js', 'atlas.css', 'atlas-data/graph.json',
+                            'atlas-data/graph-data.js', 'atlas-data/theme-guide.json', 'atlas-data/theme-guide.js', 'atlas-data/nodes.csv', 'atlas-data/edges.csv',
+                            'atlas-source/reviewed_relations.json', 'atlas-source/RULES.md',
+                            'atlas-source/DATA_DICTIONARY.md', 'atlas-source/build_graph.py', 'atlas-source/README.md']
+          for key in graph_required:
+              if key not in graph_source or not graph_source[key]:
+                  raise SystemExit(f'Required graph-source file missing or empty: {key}')
+              if graph_source[key] != site[key]:
+                  raise SystemExit(f'Graph source differs from the deployed site: {key}')
+          shared_prefixes = ('atlas-data/', 'atlas-source/', 'results/')
+          site_shared = {key for key in site if key.startswith(shared_prefixes)}
+          source_shared = {key for key in graph_source if key.startswith(shared_prefixes)}
+          if site_shared != source_shared:
+              raise SystemExit('Site and source archive have different graph/source/result file sets')
+          for key in site_shared:
+              if site[key] != graph_source[key]:
+                  raise SystemExit(f'Shared graph/source/result bytes differ: {key}')
+          if not any(key.startswith('results/') and key.lower().endswith('.png') for key in graph_source):
+              raise SystemExit('The graph source archive must include generated PNG results')
+          json.loads(site['evidence.json'].decode('utf-8-sig'))
+          graph = json.loads(site['atlas-data/graph.json'].decode('utf-8-sig'))
+          if not {'schemaVersion', 'nodes', 'edges', 'counts', 'coverage', 'rules'}.issubset(graph):
+              raise SystemExit('Graph schema fields are incomplete')
+          if not isinstance(graph['nodes'], list) or not isinstance(graph['edges'], list):
+              raise SystemExit('Graph nodes and edges must be arrays')
+          json.loads(site['atlas-source/reviewed_relations.json'].decode('utf-8-sig'))
+
+          destination = Path('_site')
           destination.mkdir()
-          with zipfile.ZipFile(archive) as source:
-              corrupt = source.testzip()
-              if corrupt is not None:
-                  raise SystemExit(f"Archive CRC check failed: {corrupt}")
-              for entry in source.infolist():
-                  name = PurePosixPath(entry.filename)
-                  if (
-                      not name.parts
-                      or name.is_absolute()
-                      or ".." in name.parts
-                      or "\\" in entry.filename
-                      or name.parts[0] != "ESCC_Evidence_Atlas"
-                  ):
-                      raise SystemExit(f"Unexpected archive path: {entry.filename}")
-                  relative = name.parts[1:]
-                  if not relative:
-                      continue
-                  target = destination.joinpath(*relative)
-                  if entry.is_dir():
-                      target.mkdir(parents=True, exist_ok=True)
-                  else:
-                      target.parent.mkdir(parents=True, exist_ok=True)
-                      target.write_bytes(source.read(entry))
-
-          required = ["index.html", "data.js", "evidence.json"]
-          required += [f"downloads/S{i}.docx" for i in range(1, 21)]
-          required += ["downloads/Supplementary_Tables.docx"]
-          for relative in required:
-              file = destination / relative
-              if not file.is_file() or file.stat().st_size == 0:
-                  raise SystemExit(f"Required site file is missing or empty: {relative}")
-          if len(list((destination / "downloads").glob("*.docx"))) != 21:
-              raise SystemExit("Expected exactly 21 Word downloads")
-          with (destination / "evidence.json").open(encoding="utf-8") as handle:
-              json.load(handle)
-
-          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
-              handle.write(f"zip_sha256={digest}\n")
-          print("Validated site entry point, data files and all 21 Word downloads")
+          for key, data in site.items():
+              target = destination.joinpath(*PurePosixPath(key).parts)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(data)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              output.write(f'zip_sha256={hashlib.sha256(packages[0][0].read_bytes()).hexdigest()}\n')
+              output.write(f'graph_source_sha256={hashlib.sha256(packages[1][0].read_bytes()).hexdigest()}\n')
+              output.write(f'publication_sha={publication_sha}\n')
+          print('Both committed archives passed CRC, public-path, required-file and shared-payload checks')
           PY
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload the Pages site
+      - name: Upload the matching Pages site
         uses: actions/upload-pages-artifact@v4
         with:
           path: _site
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the same publication commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Publish the fixed archives and their checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERIFIED_ZIP_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+          VERIFIED_GRAPH_SOURCE_SHA256: ${{ needs.build.outputs.graph_source_sha256 }}
+          VERIFIED_PUBLICATION_SHA: ${{ needs.build.outputs.publication_sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import subprocess
+          import tempfile
+
+          repository = os.environ['GH_REPO']
+          tag = os.environ['RELEASE_TAG']
+          publication_sha = os.environ['GITHUB_SHA']
+          if publication_sha != os.environ['VERIFIED_PUBLICATION_SHA']:
+              raise SystemExit('Build and release refer to different publication commits')
+          actual_sha = subprocess.run(['git', 'rev-parse', 'HEAD'], check=True, text=True, capture_output=True).stdout.strip()
+          if actual_sha != publication_sha:
+              raise SystemExit('Release checkout differs from the publication commit')
+          def require_committed(path):
+              subprocess.run(['git', 'ls-files', '--error-unmatch', str(path)], check=True, capture_output=True)
+              dirty = subprocess.run(['git', 'diff', '--name-only', 'HEAD', '--', str(path)], check=True, text=True, capture_output=True).stdout.strip()
+              if dirty:
+                  raise SystemExit(f'Publication input differs from its committed bytes: {path}')
+
+          def prepare_archive(archive, manifest_name):
+              manifest_file = Path(manifest_name)
+              manifest = None
+              if manifest_file.is_file():
+                  require_committed(manifest_file)
+                  manifest = json.loads(manifest_file.read_text(encoding='utf-8-sig'))
+                  if manifest.get('archive') != archive.name:
+                      raise SystemExit('Parts manifest names another archive')
+                  if not re.fullmatch(r'[0-9a-fA-F]{64}', str(manifest.get('sha256', ''))):
+                      raise SystemExit('Parts manifest has no valid whole-archive SHA-256')
+                  if type(manifest.get('bytes')) is not int or manifest['bytes'] <= 0:
+                      raise SystemExit('Parts manifest has no valid whole-archive byte count')
+              if archive.is_file():
+                  require_committed(archive)
+                  if manifest and (archive.stat().st_size != manifest['bytes'] or hashlib.sha256(archive.read_bytes()).hexdigest() != manifest['sha256'].lower()):
+                      raise SystemExit('Committed complete archive differs from its parts declaration')
+                  return
+              if manifest is None:
+                  raise SystemExit(f'Complete archive and parts manifest are both missing: {archive.name}')
+              parts = manifest.get('parts')
+              if not isinstance(parts, list) or not parts:
+                  raise SystemExit('Parts manifest must contain an ordered nonempty part list')
+              root = Path.cwd().resolve()
+              seen = set()
+              whole = hashlib.sha256()
+              total = 0
+              temporary = archive.with_name(archive.name + '.assembled.tmp')
+              with temporary.open('wb') as output:
+                  for item in parts:
+                      name = str(item.get('path', ''))
+                      relative = PurePosixPath(name)
+                      if not name or relative.is_absolute() or '..' in relative.parts or '\\' in name or name in seen:
+                          raise SystemExit('Invalid or repeated part path')
+                      seen.add(name)
+                      part = Path(*relative.parts)
+                      resolved = part.resolve()
+                      if part.is_symlink() or not resolved.is_relative_to(root) or not part.is_file():
+                          raise SystemExit(f'Part is missing or outside the checkout: {name}')
+                      if type(item.get('bytes')) is not int or item['bytes'] <= 0 or part.stat().st_size != item['bytes']:
+                          raise SystemExit(f'Part byte count differs: {name}')
+                      if not re.fullmatch(r'[0-9a-fA-F]{64}', str(item.get('sha256', ''))):
+                          raise SystemExit(f'Invalid part SHA-256: {name}')
+                      require_committed(part)
+                      digest = hashlib.sha256()
+                      with part.open('rb') as source:
+                          for chunk in iter(lambda: source.read(4 * 1024 * 1024), b''):
+                              digest.update(chunk)
+                              whole.update(chunk)
+                              total += len(chunk)
+                              output.write(chunk)
+                      if digest.hexdigest() != item['sha256'].lower():
+                          raise SystemExit(f'Part checksum differs: {name}')
+              if total != manifest['bytes'] or whole.hexdigest() != manifest['sha256'].lower():
+                  raise SystemExit('Joined archive differs from its declared byte count or SHA-256')
+              temporary.replace(archive)
+              print(f'Reconstructed and checked {archive.name} from committed parts')
+
+          prepare_archive(Path(os.environ['OFFLINE_ZIP']), os.environ['OFFLINE_PARTS_MANIFEST'])
+          prepare_archive(Path(os.environ['GRAPH_SOURCE_ZIP']), os.environ['GRAPH_SOURCE_PARTS_MANIFEST'])
+
+          archives = [Path(os.environ['OFFLINE_ZIP']), Path(os.environ['GRAPH_SOURCE_ZIP'])]
+          digests = [hashlib.sha256(file.read_bytes()).hexdigest() for file in archives]
+          if digests != [os.environ['VERIFIED_ZIP_SHA256'], os.environ['VERIFIED_GRAPH_SOURCE_SHA256']]:
+              raise SystemExit('Release archive bytes differ from the validated build')
+          directory = Path(tempfile.mkdtemp(prefix='escc-v1-1-release-', dir=os.environ['RUNNER_TEMP']))
+          checksum = directory / os.environ['CHECKSUM_FILE']
+          checksum.write_text(''.join(f'{digest}  {file.name}\n' for file, digest in zip(archives, digests)), encoding='ascii', newline='\n')
+          expected = {file.name: file for file in archives + [checksum]}
+
+          def gh(*arguments, allow_missing=False):
+              command = ['gh', *arguments]
+              result = subprocess.run(command, text=True, capture_output=True)
+              if result.returncode:
+                  if allow_missing and re.search(r'\bHTTP\s+404\b', result.stderr):
+                      return None
+                  raise SystemExit(f'GitHub command failed: {result.stderr.strip()}')
+              return result
+
+          def api(endpoint, allow_missing=False):
+              result = gh('api', endpoint, '-H', 'Accept: application/vnd.github+json',
+                          '-H', 'X-GitHub-Api-Version: 2026-03-10', allow_missing=allow_missing)
+              return None if result is None else json.loads(result.stdout)
+
+          def tag_commit(allow_missing=False):
+              reference = api(f'repos/{repository}/git/ref/tags/{tag}', allow_missing=allow_missing)
+              if reference is None:
+                  return None
+              obj = reference['object']
+              for _ in range(10):
+                  if obj['type'] == 'commit':
+                      return obj['sha']
+                  if obj['type'] != 'tag':
+                      raise SystemExit('Release tag does not resolve to a commit')
+                  obj = api(f'repos/{repository}/git/tags/{obj["sha"]}')['object']
+              raise SystemExit('Release tag annotation nesting is invalid')
+
+          existing_tag_sha = tag_commit(allow_missing=True)
+          if existing_tag_sha is not None and existing_tag_sha != publication_sha:
+              raise SystemExit('Fixed tag points to another commit; refusing to move or overwrite it')
+          release = api(f'repos/{repository}/releases/tags/{tag}', allow_missing=True)
+          if release is None:
+              gh('release', 'create', tag, '--repo', repository, '--target', publication_sha,
+                 '--title', f'ESCC Metabolomic Evidence Atlas {tag}', '--draft',
+                 '--notes', 'Integrated evidence view, complete bilingual offline atlas and reproducible graph-source archive. Both archives belong to the same fixed version and publication commit; their SHA-256 checksums are supplied.')
+              release = api(f'repos/{repository}/releases/tags/{tag}')
+          if release.get('prerelease'):
+              raise SystemExit('Existing version is a prerelease; leaving it unchanged')
+          if release.get('draft') and existing_tag_sha is None and release.get('target_commitish') != publication_sha:
+              raise SystemExit('Existing unpublished release has another target; leaving it unchanged')
+          assets = release.get('assets', [])
+          if release.get('draft') and any(asset['name'] not in expected for asset in assets):
+              raise SystemExit('Existing unpublished release has unreviewed extra assets; leaving it unchanged')
+          missing = []
+          for name, local in expected.items():
+              matches = [asset for asset in assets if asset['name'] == name]
+              if len(matches) > 1:
+                  raise SystemExit(f'Duplicate existing release asset: {name}')
+              if not matches:
+                  missing.append(local)
+                  continue
+              remote = directory / ('existing-' + name)
+              gh('release', 'download', tag, '--repo', repository, '--pattern', name, '--output', str(remote))
+              if hashlib.sha256(remote.read_bytes()).hexdigest() != hashlib.sha256(local.read_bytes()).hexdigest():
+                  raise SystemExit(f'Existing asset differs; refusing to overwrite: {name}')
+          if missing and release.get('immutable'):
+              raise SystemExit('Existing fixed release is immutable and incomplete; leaving it unchanged')
+          for local in missing:
+              gh('release', 'upload', tag, str(local), '--repo', repository)
+          if release.get('draft'):
+              gh('release', 'edit', tag, '--repo', repository, '--draft=false')
+          if tag_commit() != publication_sha:
+              raise SystemExit('Published fixed tag differs from the validated publication commit')
+          final = api(f'repos/{repository}/releases/tags/{tag}')
+          if final.get('draft') or final.get('prerelease'):
+              raise SystemExit('The fixed release was not published successfully')
+          for name, local in expected.items():
+              matches = [asset for asset in final.get('assets', []) if asset['name'] == name]
+              if len(matches) != 1 or matches[0].get('state') != 'uploaded':
+                  raise SystemExit(f'Published expected asset is missing or incomplete: {name}')
+              remote = directory / ('final-' + name)
+              gh('release', 'download', tag, '--repo', repository, '--pattern', name, '--output', str(remote))
+              if hashlib.sha256(remote.read_bytes()).hexdigest() != hashlib.sha256(local.read_bytes()).hexdigest():
+                  raise SystemExit(f'Published asset differs from the validated bytes: {name}')
+          print(f'{tag} has both archives and their matching checksums on the publication commit')
+          PY
 
   deploy:
     needs: [build, release]
@@ -107,95 +413,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy GitHub Pages
+      - name: Deploy the release-matched GitHub Pages site
         id: deployment
         uses: actions/deploy-pages@v4
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out the publication commit
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Publish the fixed offline release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          VERIFIED_ZIP_SHA256: ${{ needs.build.outputs.zip_sha256 }}
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import re
-          import subprocess
-          import tempfile
-
-          archive = Path(os.environ["OFFLINE_ZIP"])
-          tag = os.environ["RELEASE_TAG"]
-          repository = os.environ["GH_REPO"]
-          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-          if digest != os.environ["VERIFIED_ZIP_SHA256"]:
-              raise SystemExit("Release ZIP differs from the validated build ZIP")
-          directory = Path(tempfile.mkdtemp(prefix="escc-release-", dir=os.environ["RUNNER_TEMP"]))
-          checksum = directory / (archive.name + ".sha256")
-          checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii", newline="\n")
-          expected = {archive.name: archive, checksum.name: checksum}
-
-          def gh(*arguments):
-              return subprocess.run(["gh", *arguments], check=True, text=True, capture_output=True)
-
-          lookup = subprocess.run(
-              ["gh", "api", f"repos/{repository}/releases/tags/{tag}"],
-              text=True,
-              capture_output=True,
-          )
-          if lookup.returncode != 0:
-              if not re.search(r"\bHTTP\s+404\b", lookup.stderr):
-                  raise SystemExit(f"Cannot inspect existing release: {lookup.stderr.strip()}")
-              gh(
-                  "release", "create", tag, str(archive), str(checksum),
-                  "--repo", repository,
-                  "--target", os.environ["GITHUB_SHA"],
-                  "--title", "ESCC Metabolomic Evidence Atlas v1.0.0",
-                  "--notes", "Offline evidence atlas with English and Simplified Chinese interfaces. Download the ZIP and its SHA-256 checksum; extract the complete ZIP before opening index.html.",
-              )
-              print(f"Published {tag} with the offline ZIP and SHA-256 checksum")
-          else:
-              release = json.loads(lookup.stdout)
-              if release.get("draft") or release.get("prerelease"):
-                  raise SystemExit("Existing version is a draft or prerelease; leaving it unchanged")
-              assets = release.get("assets", [])
-              missing = []
-              for name, local in expected.items():
-                  matches = [asset for asset in assets if asset["name"] == name]
-                  if len(matches) > 1:
-                      raise SystemExit(f"Duplicate existing release assets: {name}")
-                  if not matches:
-                      missing.append(local)
-                      continue
-                  remote = directory / ("existing-" + name)
-                  gh(
-                      "release", "download", tag,
-                      "--repo", repository,
-                      "--pattern", name,
-                      "--output", str(remote),
-                  )
-                  remote_digest = hashlib.sha256(remote.read_bytes()).hexdigest()
-                  local_digest = hashlib.sha256(local.read_bytes()).hexdigest()
-                  if remote_digest != local_digest:
-                      raise SystemExit(f"Existing asset differs; refusing to overwrite: {name}")
-              # All existing expected assets must match before any missing asset is uploaded.
-              for local in missing:
-                  gh("release", "upload", tag, str(local), "--repo", repository)
-                  print(f"Uploaded missing asset: {local.name}")
-              if not missing:
-                  print(f"Release {tag} already contains byte-identical ZIP and checksum assets")
-          PY
