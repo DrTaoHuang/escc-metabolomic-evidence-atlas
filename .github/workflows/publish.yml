@@ -340,6 +340,32 @@ jobs:
                           '-H', 'X-GitHub-Api-Version: 2026-03-10', allow_missing=allow_missing)
               return None if result is None else json.loads(result.stdout)
 
+          def find_release(allow_missing=False):
+              # The tag endpoint returns published releases, not drafts.
+              published = api(f'repos/{repository}/releases/tags/{tag}', allow_missing=True)
+              if published is not None:
+                  return published
+              matches = []
+              page = 1
+              while True:
+                  releases = api(f'repos/{repository}/releases?per_page=100&page={page}')
+                  if not isinstance(releases, list):
+                      raise SystemExit('Release collection did not return a list')
+                  matches.extend(item for item in releases if item.get('tag_name') == tag)
+                  if len(releases) < 100:
+                      break
+                  page += 1
+              if len(matches) > 1:
+                  raise SystemExit('More than one release matches the fixed version; leaving all unchanged')
+              if not matches:
+                  if allow_missing:
+                      return None
+                  raise SystemExit('The fixed release was not found after creation')
+              release = api(f'repos/{repository}/releases/{matches[0]["id"]}')
+              if release.get('id') != matches[0]['id'] or release.get('tag_name') != tag:
+                  raise SystemExit('Release identity changed during lookup')
+              return release
+
           def tag_commit(allow_missing=False):
               reference = api(f'repos/{repository}/git/ref/tags/{tag}', allow_missing=allow_missing)
               if reference is None:
@@ -353,19 +379,45 @@ jobs:
                   obj = api(f'repos/{repository}/git/tags/{obj["sha"]}')['object']
               raise SystemExit('Release tag annotation nesting is invalid')
 
+          def recover_known_empty_draft(release, existing_tag_sha):
+              if not release.get('draft') or existing_tag_sha is not None or release.get('target_commitish') == publication_sha:
+                  return release
+              def eligible(value, tag_sha):
+                  return (tag_sha is None and value.get('id') == 411198881
+                          and value.get('tag_name') == tag and value.get('draft') is True
+                          and not value.get('prerelease') and value.get('published_at') is None
+                          and value.get('assets') == []
+                          and value.get('target_commitish') == '91b7e3c27062f392872abbcf7f4751e4a87531f7')
+              if not eligible(release, existing_tag_sha):
+                  raise SystemExit('Existing unpublished release has another target; leaving it unchanged')
+              endpoint = f'repos/{repository}/releases/{release["id"]}'
+              fresh = api(endpoint)
+              if not eligible(fresh, tag_commit(allow_missing=True)):
+                  raise SystemExit('Known draft no longer qualifies for empty-draft recovery; leaving it unchanged')
+              gh('api', endpoint, '--method', 'PATCH',
+                 '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2026-03-10',
+                 '-f', f'target_commitish={publication_sha}')
+              updated = api(endpoint)
+              if (updated.get('id') != 411198881 or updated.get('tag_name') != tag
+                      or updated.get('draft') is not True or updated.get('assets') != []
+                      or updated.get('target_commitish') != publication_sha
+                      or updated.get('name') != fresh.get('name') or updated.get('body') != fresh.get('body')
+                      or tag_commit(allow_missing=True) is not None):
+                  raise SystemExit('Recovered draft does not retain the required unpublished state and publication target')
+              return updated
+
           existing_tag_sha = tag_commit(allow_missing=True)
           if existing_tag_sha is not None and existing_tag_sha != publication_sha:
               raise SystemExit('Fixed tag points to another commit; refusing to move or overwrite it')
-          release = api(f'repos/{repository}/releases/tags/{tag}', allow_missing=True)
+          release = find_release(allow_missing=True)
           if release is None:
               gh('release', 'create', tag, '--repo', repository, '--target', publication_sha,
                  '--title', f'ESCC Metabolomic Evidence Atlas {tag}', '--draft',
                  '--notes', 'Integrated evidence view, complete bilingual offline atlas and reproducible graph-source archive. Both archives belong to the same fixed version and publication commit; their SHA-256 checksums are supplied.')
-              release = api(f'repos/{repository}/releases/tags/{tag}')
+              release = find_release()
           if release.get('prerelease'):
               raise SystemExit('Existing version is a prerelease; leaving it unchanged')
-          if release.get('draft') and existing_tag_sha is None and release.get('target_commitish') != publication_sha:
-              raise SystemExit('Existing unpublished release has another target; leaving it unchanged')
+          release = recover_known_empty_draft(release, existing_tag_sha)
           assets = release.get('assets', [])
           if release.get('draft') and any(asset['name'] not in expected for asset in assets):
               raise SystemExit('Existing unpublished release has unreviewed extra assets; leaving it unchanged')
